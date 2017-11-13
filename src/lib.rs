@@ -18,6 +18,7 @@ extern crate futures;
 extern crate tokio_core;
 
 pub mod proto;
+pub mod route;
 pub mod service;
 
 pub use proto::bt_dht::BtDhtHash;

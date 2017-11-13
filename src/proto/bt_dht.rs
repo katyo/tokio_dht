@@ -4,7 +4,7 @@ use serde::de::{Deserialize, Deserializer};
 use std::net::SocketAddr;
 use std::ops::BitXor;
 use std::str::from_utf8;
-use std::mem::transmute;
+//use std::mem::transmute;
 
 use rand::{Rng, OsRng};
 
@@ -13,6 +13,8 @@ use crypto_hashes::sha1::Sha1;
 
 use super::krpc::{KMessage};
 use super::serde::{serde_socket_addr, serde_option_bool};
+
+use super::super::route::node::{NodeId};
 
 #[derive(Serialize, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BtDhtQuery {
@@ -45,7 +47,7 @@ impl<'de> Deserialize<'de> for BtDhtQuery {
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 pub struct BtDhtHash(
-    #[serde(with = "serde_node_id")]
+    #[serde(with = "serde_hash")]
     [u8; 20]
 );
 
@@ -60,13 +62,13 @@ impl BtDhtHash {
         BtDhtHash(bytes)
     }
 }
-
+/*
 impl AsRef<[u8]> for BtDhtHash {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
-
+*/
 impl<'a> From<&'a str> for BtDhtHash {
     fn from(v: &'a str) -> Self {
         let mut node_id = [0u8; 20];
@@ -107,22 +109,69 @@ impl From<Vec<u8>> for BtDhtHash {
 }
  */
 
+impl Default for BtDhtHash {
+    fn default() -> Self {
+        BtDhtHash([0u8; 20])
+    }
+}
+
 impl BitXor<BtDhtHash> for BtDhtHash {
     type Output = BtDhtHash;
 
     fn bitxor(self, other: Self) -> Self {
-        let mut hash = [0u8; 20];
+        let mut out = [0u8; 20];
+        /*
         // for i in 0 .. 20 { hash[i] = self.0[i] ^ other.0[i]; }
         // optimization for 32-bit computation
         // up to 4 times faster than 8-bit variant
-        // (or up to 36 times according to benchmark results)
         let a = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&self.0) };
         let b = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&other.0) };
-        let r = unsafe { transmute::<&mut [u8; 20], &mut [u32; 5]>(&mut hash) };
+        let r = unsafe { transmute::<&mut [u8; 20], &mut [u32; 5]>(&mut out) };
         for i in 0 .. 5 {
             r[i] = a[i] ^ b[i];
         }
-        BtDhtHash(hash)
+         */
+        for i in 0 .. 20 {
+            out[i] = self.0[i] ^ other.0[i];
+        }
+        BtDhtHash(out)
+    }
+}
+
+impl NodeId for BtDhtHash {
+    fn equal_bits(&self, other: &Self) -> usize {
+        /*
+        let s = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&self.0) };
+        let o = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&other.0) };
+        if let Some(i) = s.iter().zip(o.iter()).position(|(a, b)| a != b) {
+            32 * i + {
+                let x = s[i] ^ o[i];
+                let x = if cfg!(target_endian = "little") {
+                    x.swap_bytes()
+                } else {
+                    x
+                };
+                x.leading_zeros()
+            } as usize
+        } else {
+            32 * 5
+        }
+         */
+        let a = &self.0;
+        let b = &other.0;
+        if let Some(i) = a.iter().zip(b.iter()).position(|(a, b)| a != b) {
+            i * 8 + (a[i] ^ b[i]).leading_zeros() as usize
+        } else {
+            20 * 8
+        }
+        /*
+        for i in 0 .. 20 {
+            if self.0[i] != other.0[i] {
+                return (self.0[i] ^ other.0[i]).leading_zeros() as usize
+            }
+        }
+        20 * 8
+         */
     }
 }
 
@@ -191,13 +240,14 @@ mod serde_nodes_info {
     use serde_bytes;
     use serde::ser::Serializer;
     use serde::de::{Deserializer, Error};
+    use super::serde_hash;
     
     pub fn serialize<S>(nodes_info: &Vec<BtDhtNodeInfo>, serializer: S) -> Result<S::Ok, S::Error>
         where S: Serializer
     {
         let mut buf = Vec::new();
         for node_info in nodes_info {
-            buf.extend(&node_info.id.0);
+            serde_hash::to_bytes(&mut buf, &node_info.id.0);
             socket_addr::to_bytes(&mut buf, &node_info.addr);
         }
         serializer.serialize_bytes(&buf)
@@ -211,8 +261,7 @@ mod serde_nodes_info {
         if len % 26 == 0 {
             let mut nodes_info = Vec::new();
             for buf in buf.chunks(26) {
-                let mut id = [0u8; 20];
-                id.clone_from_slice(&buf[..20]);
+                let id = serde_hash::from_bytes(&buf[..20]).unwrap();
                 let addr = socket_addr::from_bytes(&buf[20..]).unwrap();
                 nodes_info.push(BtDhtNodeInfo {id: BtDhtHash(id), addr});
             }
@@ -223,29 +272,37 @@ mod serde_nodes_info {
     }
 }
 
-mod serde_node_id {
+mod serde_hash {
     use serde_bytes;
     use serde::ser::Serializer;
     use serde::de::{Deserializer, Error};
     
-    pub fn serialize<S>(node_id: &[u8; 20], serializer: S) -> Result<S::Ok, S::Error>
+    pub fn to_bytes(buf: &mut Vec<u8>, hash: &[u8; 20]) {
+        buf.extend(hash);
+    }
+
+    pub fn from_bytes(buf: &[u8]) -> Result<[u8; 20], ()> {
+        let len = buf.len();
+        if len == 20 {
+            let mut hash = [0u8; 20];
+            hash.clone_from_slice(&buf);
+            Ok(hash)
+        } else {
+            Err(())
+        }
+    }
+    
+    pub fn serialize<S>(hash: &[u8; 20], serializer: S) -> Result<S::Ok, S::Error>
         where S: Serializer
     {
-        serializer.serialize_bytes(node_id)
+        serializer.serialize_bytes(hash)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 20], D::Error>
         where D: Deserializer<'de>
     {
         let buf: Vec<u8> = serde_bytes::deserialize(deserializer)?;
-        let len = buf.len();
-        if len == 20 {
-            let mut node_id = [0u8; 20];
-            node_id.clone_from_slice(&buf);
-            Ok(node_id)
-        } else {
-            Err(Error::custom("Malformed compact node info"))
-        }
+        from_bytes(&buf).map_err(|_| Error::custom("Malformed compact node info"))
     }
 }
 
@@ -264,6 +321,7 @@ mod tests {
     use serde_bencode::de::{from_bytes};
     use hexdump::hexdump;
     use super::super::krpc::{KAddress, KMessage, KError};
+    use super::{NodeId};
     use super::{BtDhtQuery, BtDhtMessage, BtDhtArg, BtDhtRes, BtDhtHash};
 
     #[test]
@@ -303,7 +361,65 @@ mod tests {
         let y = BtDhtHash::from([0x55u8; 20]);
 
         b.iter(|| {
-            (0..black_box(100000)).fold(x, |a, _| a ^ y)
+            (0..black_box(1000)).fold(x, |a, _| { a ^ y; a })
+        });
+    }
+
+    #[test]
+    pub fn test_hash_beq() {
+        assert_eq!(0,
+                   BtDhtHash::from([0xFFu8; 20])
+                   .equal_bits(&BtDhtHash::from([0x00u8; 20])));
+
+        assert_eq!(0,
+                   BtDhtHash::from([0x00u8; 20])
+                   .equal_bits(&BtDhtHash::from([0xFFu8; 20])));
+        
+        assert_eq!(0,
+                   BtDhtHash::from([0xAAu8; 20])
+                   .equal_bits(&BtDhtHash::from([0x55u8; 20])));
+
+        assert_eq!(1,
+                   BtDhtHash::from([0x00u8; 20])
+                   .equal_bits(&BtDhtHash::from([0x55u8; 20])));
+
+        assert_eq!(1,
+                   BtDhtHash::from([0xFFu8; 20])
+                   .equal_bits(&BtDhtHash::from([0xAAu8; 20])));
+        
+        assert_eq!(160,
+                   BtDhtHash::from([0x00u8; 20])
+                   .equal_bits(&BtDhtHash::from([0x00u8; 20])));
+
+        assert_eq!(160,
+                   BtDhtHash::from([0xFFu8; 20])
+                   .equal_bits(&BtDhtHash::from([0xFFu8; 20])));
+
+        assert_eq!(160,
+                   BtDhtHash::from([0x55u8; 20])
+                   .equal_bits(&BtDhtHash::from([0x55u8; 20])));
+
+        assert_eq!(160,
+                   BtDhtHash::from([0xAAu8; 20])
+                   .equal_bits(&BtDhtHash::from([0xAAu8; 20])));
+
+        assert_eq!(21,
+                   BtDhtHash::from([0x01, 0x23, 0x45, 0x67, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                   .equal_bits(&BtDhtHash::from([0x01, 0x23, 0x41, 0x67, 0x78, 0x90, 0xab, 0xef, 0xcd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])));
+
+        assert_eq!(75,
+                   BtDhtHash::from([0x01, 0x23, 0x45, 0x67, 0x78, 0x90, 0xab, 0xcd, 0xef, 0xa5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                   .equal_bits(&BtDhtHash::from([0x01, 0x23, 0x45, 0x67, 0x78, 0x90, 0xab, 0xcd, 0xef, 0xb5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])));
+    }
+
+    #[bench]
+    pub fn bench_hash_beq(b: &mut Bencher) {
+        let x = BtDhtHash::from([0xAAu8; 20]);
+        let y = BtDhtHash::from([0x55u8; 20]);
+        let mut t = 0;
+
+        b.iter(|| {
+            (0..black_box(1000)).fold(x, |a, _| { t += a.equal_bits(&y); a })
         });
     }
     

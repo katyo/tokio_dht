@@ -16,7 +16,7 @@ use super::proto::bt_dht::{BtDhtHash, BtDhtMessage, BtDhtQuery, BtDhtArg, BtDhtR
 
 #[derive(Debug)]
 enum Command {
-    AddNode(BtDhtHash, SocketAddr),
+    AddNode(SocketAddr),
     FindNode(BtDhtHash, oneshot::Sender<SocketAddr>),
     GetPeers(BtDhtHash, oneshot::Sender<Vec<SocketAddr>>),
     Finalize,
