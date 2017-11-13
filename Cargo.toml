@@ -1,0 +1,29 @@
+[package]
+name = "tokio_dht"
+version = "0.1.0"
+authors = ["Kayo Phoenix <kayo@illumium.org>"]
+
+[dependencies]
+futures = "0.1"
+tokio-core = "0.1"
+serde = "1.0"
+serde_derive = "1.0"
+serde_bencode = "0.2"
+serde_bytes = "0.10"
+rand = "0.3"
+log = "0.3"
+hexdump = "0.1"
+pretty_env_logger = "0.1"
+
+[dependencies.crypto-hashes]
+features = ["include_weak"]
+version = "0.4"
+
+[profile.dev]
+debug = true
+opt-level = 0
+
+[profile.release]
+lto = true
+#panic = 'abort'
+opt-level = 'z'
