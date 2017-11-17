@@ -1,11 +1,5 @@
-//use std::ops::BitXor;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-
-pub trait NodeId {
-    /// Number of leading bits that are identical between two hashes
-    fn equal_bits(&self, other: &Self) -> usize;
-}
 
 /// Maximum wait period before a node becomes questionable.
 const MAX_LAST_SEEN_SECS: u64 = 15 * 60;

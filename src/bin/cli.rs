@@ -7,7 +7,7 @@ use futures::Future;
 
 use tokio_core::reactor::Core;
 
-use tokio_dht::{BtDhtHash, BtDhtService};
+use tokio_dht::bt::{BtDhtId, BtDhtService};
 
 fn main() {
     pretty_env_logger::init().unwrap();
@@ -18,13 +18,16 @@ fn main() {
 
     let addr = "0.0.0.0:6881".parse().unwrap();
 
-    let node_id = BtDhtHash::new();
+    let node_id = BtDhtId::new();
 
     let (service, server) = BtDhtService::new(node_id, &addr, &handle);
 
-    let query = service.find_node(&node_id);
+    let query = service.ping_node("82.221.103.244:6881".parse().unwrap());
 
-    handle.spawn(query.then(|_| Ok(())));
+    handle.spawn(query.then(|res| {
+        println!("Pong: {:?}!!!", res);
+        Ok(())
+    }));
 
     core.run(server).unwrap();
 }

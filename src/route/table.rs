@@ -1,6 +1,6 @@
 use std::slice::Iter;
-use super::node::{Node, NodeStatus, NodeId};
-use super::bucket::{Bucket, MAX_BUCKET_SIZE, NodeFilter};
+use super::{Node, NodeStatus, NodeId, Bucket, NodeFilter};
+use super::bucket::MAX_BUCKET_SIZE;
 
 pub const MAX_BUCKETS: usize = 20 * 8;
 

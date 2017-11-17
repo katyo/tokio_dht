@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, SocketAddr};
 use std::slice::Iter;
 use std::iter::Filter;
 
-use super::node::{Node, NodeStatus};
+use super::{Node, NodeStatus};
 
 /// Maximum number of nodes that should reside in any bucket.
 pub const MAX_BUCKET_SIZE: usize = 8;

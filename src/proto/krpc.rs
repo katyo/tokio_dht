@@ -9,7 +9,29 @@ pub struct KAddress (
     pub SocketAddr,
 );
 
-pub type KTransId = Vec<u8>;
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct KTransId (
+    #[serde(with = "serde_bytes")]
+    pub Vec<u8>,
+);
+
+impl<'a> From<&'a str> for KTransId {
+    fn from(s: &'a str) -> Self {
+        KTransId(s.into())
+    }
+}
+
+impl<'a> From<&'a [u8]> for KTransId {
+    fn from(b: &'a [u8]) -> Self {
+        KTransId(b.into())
+    }
+}
+
+impl AsRef<[u8]> for KTransId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "y")]
@@ -17,8 +39,7 @@ pub enum KMessage<Query, Arg, Res> {
     #[serde(rename = "q")]
     Query {
         #[serde(rename = "t")]
-        #[serde(with = "serde_bytes")]
-        tid: KTransId,
+        tid: Option<KTransId>,
         #[serde(rename = "q")]
         query: Query,
         #[serde(rename = "a")]
@@ -28,8 +49,7 @@ pub enum KMessage<Query, Arg, Res> {
     Response {
         ip: Option<KAddress>,
         #[serde(rename = "t")]
-        #[serde(with = "serde_bytes")]
-        tid: KTransId,
+        tid: Option<KTransId>,
         #[serde(rename = "r")]
         res: Res,
     },
@@ -37,16 +57,27 @@ pub enum KMessage<Query, Arg, Res> {
     Error {
         ip: Option<KAddress>,
         #[serde(rename = "t")]
-        #[serde(with = "serde_bytes")]
-        tid: KTransId,
+        tid: Option<KTransId>,
         #[serde(rename = "e")]
-        error: (KError, String),
+        error: KError,
     },
 }
 
-serde_numeric_enum!(KError {
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct KError(
+    pub KErrorKind,
+    pub String,
+);
+
+serde_numeric_enum!(KErrorKind {
     Generic = 201,
     Server = 202,
     Protocol = 203,
     Method = 204,
 });
+
+pub trait KQueryArg {
+    type Query;
+    
+    fn query(&self) -> Self::Query;
+}
