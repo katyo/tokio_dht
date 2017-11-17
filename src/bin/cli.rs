@@ -9,12 +9,28 @@ use tokio_core::reactor::Core;
 
 use tokio_dht::bt::{BtDhtId, BtDhtService};
 
+use tokio_dht::ns::resolve_hosts;
+
 fn main() {
     pretty_env_logger::init().unwrap();
     println!("start...");
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
+
+    let routers = vec![
+        "router.utorrent.com:6881".into(),
+        "router.bittorrent.com:6881".into(),
+        "dht.transmissionbt.com:6881".into(),
+    ];
+
+    let resolving = resolve_hosts(routers, &handle)
+        .then(|res| {
+            println!("Resolved addrs: {:?}", res);
+            Ok(())
+        });
+
+    handle.spawn(resolving);
 
     let addr = "0.0.0.0:6881".parse().unwrap();
 
