@@ -19,13 +19,14 @@ fn main() {
     let handle = core.handle();
 
     let routers = vec![
-        "router.utorrent.com:6881".into(),
+        "router.utorrent.com".into(),
         "router.bittorrent.com:6881".into(),
-        "dht.transmissionbt.com:6881".into(),
+        "dht.transmissionbt.com".into(),
+        "router.bitcomet.com".into(),
     ];
 
     let resolving = resolve_hosts(routers, &handle)
-        .then(|res| {
+        .and_then(|res| {
             println!("Resolved addrs: {:?}", res);
             Ok(())
         });
