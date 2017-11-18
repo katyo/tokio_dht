@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::time::Duration;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 
@@ -10,23 +11,27 @@ use futures::{Future, Sink, Stream};
 use futures::future::{Either, Loop, loop_fn, ok, err};
 use futures::sync::{oneshot, mpsc};
 
-use tokio_core::reactor::Handle;
+use tokio_core::reactor::{Handle, Timeout};
 use tokio_core::net::UdpSocket;
 use tokio_service::Service;
 
-use super::{KError, KQueryArg, KCodec, KItem, KData, KTrans};
+use super::{KError, KQueryArg, KCodec, KItem, KData, KTrans, KId};
 
 #[derive(Debug)]
 pub enum KTransError {
     KError(KError),
     IOError(Error),
+    Timeout,
 }
 
 type KTransResponder<Res> = oneshot::Sender<Result<Res, KTransError>>;
-struct KTransQuery<Arg, Res>(SocketAddr, Arg, KTransResponder<Res>);
+type KTransIdenter = oneshot::Sender<KId>;
+struct KTransQuery<Arg, Res>(SocketAddr, Arg, KTransResponder<Res>, KTransIdenter);
 
+#[derive(Clone)]
 pub struct KService<Query, Arg, Res, Handler> {
-    query_tx: mpsc::Sender<KTransQuery<Arg, Res>>,
+    query_tx: mpsc::Sender<Either<KTransQuery<Arg, Res>, KId>>,
+    handle: Handle,
     phantom: PhantomData<(Query, Handler)>,
 }
 
@@ -36,18 +41,32 @@ impl<'s, Query, Arg, Res, Handler> KService<Query, Arg, Res, Handler>
           Res: 's + Serialize + DeserializeOwned + Debug,
           Handler: 's + Service<Request = Arg, Response = Res, Error = KError>,
 {
-    pub fn query(&self, addr: SocketAddr, arg: Arg) -> Box<Future<Item = Res, Error = KTransError> + 's> {
+    pub fn query(&self, addr: SocketAddr, arg: Arg, timeout: Duration) -> Box<Future<Item = Res, Error = KTransError> + 's> {
         let (res_tx, res_rx) = oneshot::channel();
+        let (tid_tx, tid_rx) = oneshot::channel();
+        let handle = self.handle.clone();
+        let cancel_tx = self.query_tx.clone();
+        let query_tx = self.query_tx.clone();
         Box::new(
-            self.query_tx.clone().send(KTransQuery(addr, arg, res_tx))
-                .map_err(|_| KTransError::IOError(Error::new(ErrorKind::Other, "Recv error")))
-                .and_then(|_| {
-                    res_rx.map_err(|_| KTransError::IOError(Error::new(ErrorKind::Other, "Recv error")))
-                        .and_then(|response| {
-                            match response {
-                                Ok(res) => ok(res),
-                                Err(error) => err(error),
-                            }
+            query_tx.send(Either::A(KTransQuery(addr, arg, res_tx, tid_tx)))
+                .map_err(|_| KTransError::IOError(Error::new(ErrorKind::Other, "Send error")))
+                .and_then(move |_| {
+                    tid_rx.map_err(|_| KTransError::IOError(Error::new(ErrorKind::Other, "Send error")))
+                        .and_then(move |tid| {
+                            Timeout::new(timeout, &handle).unwrap()
+                                .map_err(|err| KTransError::IOError(err))
+                                .map(Either::B)
+                                .select(res_rx.map_err(|_| KTransError::IOError(Error::new(ErrorKind::Other, "Recv error")))
+                                        .map(Either::A))
+                                .map_err(|(err, _)| err)
+                                .and_then(|(result, _)| {
+                                    match result {
+                                        Either::A(Ok(res)) => Either::A(ok(res)),
+                                        Either::A(Err(error)) => Either::A(err(error)),
+                                        Either::B(_) => Either::B(cancel_tx.send(Either::B(tid))
+                                                                  .then(|_| err(KTransError::Timeout))),
+                                    }
+                                })
                         })
                 })
         )
@@ -57,7 +76,10 @@ impl<'s, Query, Arg, Res, Handler> KService<Query, Arg, Res, Handler>
         let trans: KTrans<KTransResponder<Res>> = KTrans::new();
         let codec: KCodec<Query, Arg, Res> = KCodec::new();
         let socket = UdpSocket::bind(addr, handle).unwrap();
+        let handle = handle.clone();
+        
         info!("Listening on: {}", socket.local_addr().unwrap());
+        
         let (net_tx, net_rx) = socket.framed(codec).split();
         let (query_tx, query_rx) = mpsc::channel(1);
         // Compose event stream
@@ -65,7 +87,7 @@ impl<'s, Query, Arg, Res, Handler> KService<Query, Arg, Res, Handler>
             .select(query_rx.map(Either::B)
                     .map_err(|_| Error::new(ErrorKind::Other, "Query error")))
             .into_future();
-        (KService { query_tx, phantom: PhantomData },
+        (KService { query_tx, handle, phantom: PhantomData },
          Box::new(
              loop_fn(
                  (event_rx, net_tx, trans, handler),
@@ -77,7 +99,7 @@ impl<'s, Query, Arg, Res, Handler> KService<Query, Arg, Res, Handler>
                          if let Some(item) = item {
                              let event_rx = event_stream.into_future();
                              match item {
-                                 Either::A(KItem(id, msg)) => {
+                                 Either::A(KItem(trans_id, msg)) => {
                                      match msg {
                                          KData::Query(arg) => {
                                              return Either::B(Either::A(handler.call(arg).then(|result| {
@@ -85,31 +107,39 @@ impl<'s, Query, Arg, Res, Handler> KService<Query, Arg, Res, Handler>
                                                      Ok(res) => KData::Response(res),
                                                      Err(err) => KData::Error(err),
                                                  };
-                                                 net_tx.send(KItem(id, resp))
+                                                 net_tx.send(KItem(trans_id, resp))
                                                      .and_then(|net_tx| {
                                                          ok(Loop::Continue((event_rx, net_tx, trans, handler)))
                                                      })
                                              })));
                                          },
                                          KData::Response(res) => {
-                                             if let Some(res_tx) = trans.end(&id) {
+                                             if let Some(res_tx) = trans.end(&trans_id) {
                                                  let _ = res_tx.send(Ok(res));
                                              }
                                          },
                                          KData::Error(err) => {
                                              warn!("DHT Error response: {:?}", err);
-                                             if let Some(res_tx) = trans.end(&id) {
+                                             if let Some(res_tx) = trans.end(&trans_id) {
                                                  let _ = res_tx.send(Err(KTransError::KError(err)));
                                              }
                                          },
                                      }
                                  },
-                                 Either::B(KTransQuery(addr, arg, res_tx)) => {
-                                     let id = trans.start(addr, res_tx);
-                                     return Either::B(Either::B(net_tx.send(KItem(id, KData::Query(arg)))
-                                         .and_then(|net_tx| {
-                                             ok(Loop::Continue((event_rx, net_tx, trans, handler)))
-                                         })))
+                                 Either::B(Either::A(KTransQuery(addr, arg, res_tx, tid_tx))) => {
+                                     let trans_id = trans.start(addr, res_tx);
+                                     let _ = tid_tx.send(trans_id.clone());
+                                     return Either::B(Either::B(
+                                         net_tx.send(KItem(trans_id, KData::Query(arg)))
+                                             .and_then(|net_tx| {
+                                                 ok(Loop::Continue((event_rx, net_tx, trans, handler)))
+                                             })))
+                                 },
+                                 Either::B(Either::B(trans_id)) => {
+                                     warn!("DHT Response timeout");
+                                     if let Some(res_tx) = trans.end(&trans_id) {
+                                         let _ = res_tx.send(Err(KTransError::Timeout));
+                                     }
                                  },
                              }
                              Either::A(ok(Loop::Continue((event_rx, net_tx, trans, handler))))
