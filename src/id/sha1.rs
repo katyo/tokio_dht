@@ -1,5 +1,4 @@
 use std::ops::BitXor;
-//use std::mem::transmute;
 
 use rand::{Rng, OsRng};
 
@@ -57,17 +56,6 @@ impl BitXor<Sha1Id> for Sha1Id {
 
     fn bitxor(self, other: Self) -> Self {
         let mut out = [0u8; 20];
-        /*
-        // for i in 0 .. 20 { hash[i] = self.0[i] ^ other.0[i]; }
-        // optimization for 32-bit computation
-        // up to 4 times faster than 8-bit variant
-        let a = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&self.0) };
-        let b = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&other.0) };
-        let r = unsafe { transmute::<&mut [u8; 20], &mut [u32; 5]>(&mut out) };
-        for i in 0 .. 5 {
-            r[i] = a[i] ^ b[i];
-        }
-         */
         for i in 0 .. 20 {
             out[i] = self.0[i] ^ other.0[i];
         }
@@ -77,23 +65,6 @@ impl BitXor<Sha1Id> for Sha1Id {
 
 impl NodeId for Sha1Id {
     fn equal_bits(&self, other: &Self) -> usize {
-        /*
-        let s = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&self.0) };
-        let o = unsafe { transmute::<&[u8; 20], &[u32; 5]>(&other.0) };
-        if let Some(i) = s.iter().zip(o.iter()).position(|(a, b)| a != b) {
-            32 * i + {
-                let x = s[i] ^ o[i];
-                let x = if cfg!(target_endian = "little") {
-                    x.swap_bytes()
-                } else {
-                    x
-                };
-                x.leading_zeros()
-            } as usize
-        } else {
-            32 * 5
-        }
-         */
         let a = &self.0;
         let b = &other.0;
         if let Some(i) = a.iter().zip(b.iter()).position(|(a, b)| a != b) {
@@ -101,14 +72,6 @@ impl NodeId for Sha1Id {
         } else {
             20 * 8
         }
-        /*
-        for i in 0 .. 20 {
-            if self.0[i] != other.0[i] {
-                return (self.0[i] ^ other.0[i]).leading_zeros() as usize
-            }
-        }
-        20 * 8
-         */
     }
 }
 
